@@ -11,17 +11,30 @@ def verify_staff(request):
 
     if not phone_number:
         return Response(
-            {'error': 'Phone number is required'},
+            {
+                'success': False,
+                'message': 'Phone number is required'
+            },
             status=status.HTTP_400_BAD_REQUEST
         )
 
     try:
         staff = Staff.objects.get(phone_number=phone_number, is_active=True)
         serializer = StaffSerializer(staff)
-        return Response(serializer.data, status=status.HTTP_200_OK)
+        return Response(
+            {
+                'success': True,
+                'data': serializer.data
+            },
+            status=status.HTTP_200_OK
+        )
 
     except Staff.DoesNotExist:
         return Response(
-            {'error': 'Staff not authorized'},
+            {
+                'success': False,
+                'message': 'Staff not authorized'
+            },
             status=status.HTTP_404_NOT_FOUND
         )
+
