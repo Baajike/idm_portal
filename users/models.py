@@ -2,15 +2,36 @@ from django.db import models
 
 
 class Staff(models.Model):
-    full_name = models.CharField(max_length=150)
-    phone_number = models.CharField(max_length=25)
-    staff_id_number = models.CharField(max_length=50, unique=True)
-    id_card_image = models.ImageField(upload_to='id_cards/')
-    is_active = models.BooleanField(default=True)
-    created_at = models.DateTimeField(auto_now_add=True)
+    name = models.CharField(max_length=255)
+
+    functional_area = models.CharField(
+        max_length=255,
+        blank=True,
+        null=True
+    )
+
+    staff_id = models.CharField(
+        max_length=50,
+        blank=True,
+        null=True
+    )
+
+    contact = models.CharField(
+        max_length=50,
+        unique=True,      # 👈 IMPORTANT
+        blank=True,
+        null=True
+    )
+
+    photo = models.ImageField(
+        upload_to='staff_photos/',
+        blank=True,
+        null=True
+    )
 
     def __str__(self):
-        return self.full_name
+        return f"{self.name} ({self.contact})"
+
 
 class LoginAudit(models.Model):
     phone_number = models.CharField(max_length=15)

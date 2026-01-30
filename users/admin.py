@@ -1,9 +1,13 @@
 from django.contrib import admin
-from .models import Staff
+from .models import Staff, LoginAudit
 
 
 @admin.register(Staff)
 class StaffAdmin(admin.ModelAdmin):
-    list_display = ('full_name', 'phone_number', 'staff_id_number', 'is_active')
-    search_fields = ('full_name', 'phone_number', 'staff_id_number')
-    list_filter = ('is_active',)
+    list_display = ("name", "functional_area", "contact", "staff_id")
+    search_fields = ("name", "contact", "staff_id")
+
+
+@admin.register(LoginAudit)
+class LoginAuditAdmin(admin.ModelAdmin):
+    list_display = ("phone_number", "success", "reason", "created_at")

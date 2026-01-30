@@ -1,57 +1,56 @@
-import csv
-import os
 from django.core.management.base import BaseCommand
-from django.core.files import File
-from django.conf import settings
 from users.models import Staff
+from openpyxl import load_workbook
+from django.conf import settings
+import os
 
 
 class Command(BaseCommand):
-    help = 'Import staff records from CSV including ID card images'
-
-    def add_arguments(self, parser):
-        parser.add_argument('csv_file', type=str, help='Path to CSV file')
+    help = "Import staff from Excel file"
 
     def handle(self, *args, **kwargs):
-        csv_file = kwargs['csv_file']
-        image_base_path = os.path.join(settings.MEDIA_ROOT, 'import_id_cards')
+        file_path = os.path.join(settings.BASE_DIR, "staff.xlsx")
+
+        if not os.path.exists(file_path):
+            self.stdout.write(self.style.ERROR("Excel file not found"))
+            return
+
+        wb = load_workbook(file_path)
+        sheet = wb.active
 
         created = 0
         skipped = 0
 
-        with open(csv_file, newline='', encoding='utf-8') as file:
-            reader = csv.DictReader(file)
+        for row in sheet.iter_rows(min_row=2, values_only=True):
+            name, functional_area, staff_id, contact, photo_name = row[:5]
 
-            for row in reader:
-                phone = row.get('phone_number')
+            if not contact:
+                skipped += 1
+                continue
 
-                if not phone:
-                    skipped += 1
-                    continue
+            staff, created_flag = Staff.objects.get_or_create(
 
-                staff, is_created = Staff.objects.get_or_create(
-                    phone_number=phone,
-                    defaults={
-                        'full_name': row.get('full_name', ''),
-                        'staff_id_number': row.get('staff_id_number', ''),
-                        'is_active': True,
-                    }
-                )
-
-                image_name = row.get('id_card_image')
-                if image_name:
-                    image_path = os.path.join(image_base_path, image_name)
-                    if os.path.exists(image_path):
-                        with open(image_path, 'rb') as img:
-                            staff.id_card_image.save(image_name, File(img), save=True)
-
-                if is_created:
-                    created += 1
-                else:
-                    skipped += 1
-
-        self.stdout.write(
-            self.style.SUCCESS(
-                f'Import completed: {created} created, {skipped} skipped'
+                contact=contact,
+                defaults={
+                    "name": name,
+                    "functional_area": functional_area,
+                    "staff_id": staff_id,
+                }
             )
-        )
+
+            if photo_name:
+                photo_path = f"staff_photos/{photo_name}"
+                full_path = os.path.join(settings.MEDIA_ROOT, photo_path)
+
+                if os.path.exists(full_path):
+                    staff.photo = photo_path
+                    staff.save()
+
+            if created_flag:
+                created += 1
+            else:
+                skipped += 1
+
+        self.stdout.write(self.style.SUCCESS(
+            f"Import complete. Created: {created}, Skipped: {skipped}"
+        ))

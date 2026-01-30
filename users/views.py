@@ -1,81 +1,86 @@
-from rest_framework.decorators import api_view
-from rest_framework.response import Response
-from rest_framework import status
+from django.http import JsonResponse
+from django.views.decorators.csrf import csrf_exempt
+import json
+from datetime import datetime
 
-from .models import Staff, LoginAudit
-from .serializers import StaffSerializer
-from .utils import normalize_phone
+# Temporary in-memory storage (we'll replace with DB later)
+STAFF_DB = {
+    # example:
+    # "0241234567": {
+    #     "phone_number": "0241234567",
+    #     "photo": "staff_0241234567.jpg"
+    # }
+}
+
+SCAN_DB = []
 
 
-@api_view(['POST'])
-def verify_staff(request):
-    phone_number = request.data.get('phone_number')
+@csrf_exempt
+def verify_phone(request):
+    if request.method != "POST":
+        return JsonResponse({"error": "POST request required"}, status=405)
+
+    try:
+        data = json.loads(request.body)
+        phone_number = data.get("phone_number")
+
+        if not phone_number:
+            return JsonResponse({"error": "Phone number is required"}, status=400)
+
+        staff = STAFF_DB.get(phone_number)
+
+        if not staff:
+            return JsonResponse({
+                "verified": False,
+                "message": "Phone number not found"
+            }, status=404)
+
+        return JsonResponse({
+            "verified": True,
+            "phone_number": staff["phone_number"],
+            "photo": staff.get("photo")
+        })
+
+    except Exception as e:
+        return JsonResponse({"error": str(e)}, status=500)
+
+
+@csrf_exempt
+def verify_scan(request):
+    if request.method != "POST":
+        return JsonResponse({"error": "POST request required"}, status=405)
+
+    try:
+        data = json.loads(request.body)
+        phone_number = data.get("phone_number")
+
+        if not phone_number:
+            return JsonResponse({"error": "Phone number required"}, status=400)
+
+        scan = {
+            "phone_number": phone_number,
+            "time": datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+        }
+
+        SCAN_DB.append(scan)
+
+        return JsonResponse({
+            "success": True,
+            "scan": scan
+        })
+
+    except Exception as e:
+        return JsonResponse({"error": str(e)}, status=500)
+
+
+def recent_entry(request):
+    phone_number = request.GET.get("phone_number")
 
     if not phone_number:
-        return Response(
-            {
-                'success': False,
-                'message': 'Phone number is required'
-            },
-            status=status.HTTP_400_BAD_REQUEST
-        )
+        return JsonResponse({"recent_entry": None})
 
-    # Get all active staff
-    staff_qs = Staff.objects.filter(is_active=True)
+    for scan in reversed(SCAN_DB):
+        if scan["phone_number"] == phone_number:
+            return JsonResponse({"recent_entry": scan})
 
-    matched_staff = []
-
-    # Match phone number against possibly multiple stored numbers
-    for staff in staff_qs:
-        stored_numbers = normalize_phone(staff.phone_number)
-        if phone_number in stored_numbers:
-            matched_staff.append(staff)
-
-    # 🚫 No record found
-    if len(matched_staff) == 0:
-        LoginAudit.objects.create(
-            phone_number=phone_number,
-            success=False,
-            reason="not_found"
-        )
-        return Response(
-            {
-                'success': False,
-                'message': 'Staff not authorized'
-            },
-            status=status.HTTP_404_NOT_FOUND
-        )
-
-    # ⚠️ Duplicate phone number
-    if len(matched_staff) > 1:
-        LoginAudit.objects.create(
-            phone_number=phone_number,
-            success=False,
-            reason="duplicate_phone_number"
-        )
-        return Response(
-            {
-                'success': False,
-                'data': None,
-                'message': 'Multiple records found for this phone number'
-            },
-            status=status.HTTP_200_OK
-        )
-
-    # ✅ Exactly one valid staff
-    staff = matched_staff[0]
-    serializer = StaffSerializer(staff)
-
-    LoginAudit.objects.create(
-        phone_number=phone_number,
-        success=True,
-        reason="success"
-    )
-
-    return Response(
-        {
-            'success': True,
-            'data': serializer.data
-        },
-        status=status.HTTP_200_OK
-    )
+    return JsonResponse({"recent_entry": None})
