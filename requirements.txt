@@ -4,3 +4,8 @@ djangorestframework==3.16.1
 pillow==12.1.0
 sqlparse==0.5.5
 tzdata==2025.3
+
+# New packages for security and audit features
+django-simple-history==3.4.0  # Version control for models
+django-cors-headers==4.3.1    # CORS support
+psycopg2-binary==2.9.9        # PostgreSQL adapter
