@@ -9,7 +9,7 @@ import 'package:device_info_plus/device_info_plus.dart';
 
 // ⚠️ IMPORTANT: Change this to your computer's IP address when testing on a real phone
 const String BASE_URL =
-    'http://127.0.0.1:8000'; // Change to http://192.168.1.X:8000 for phone testing
+    'http://192.168.31.47:8000'; // Change to http://192.168.1.X:8000 for phone testing
 
 // ============================================
 // Device ID Functions

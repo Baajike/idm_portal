@@ -19,17 +19,13 @@ def get_client_ip(request):
 
 
 def validate_contact_format(contact):
-    """
-    Data quality check: Validate phone number format
-    Returns: (is_valid, error_message)
-    """
+    """Validate phone number format"""
     if not contact:
         return False, "Contact is required"
     
     if not isinstance(contact, str):
         return False, "Contact must be a string"
     
-    # Must be exactly 10 digits starting with 0
     if not re.match(r'^0\d{9}$', contact):
         return False, "Phone number must be 10 digits starting with 0 (e.g., 0547788117)"
     
@@ -37,10 +33,7 @@ def validate_contact_format(contact):
 
 
 def validate_device_id(device_id):
-    """
-    Data quality check: Validate device ID
-    Returns: (is_valid, error_message)
-    """
+    """Validate device ID"""
     if not device_id:
         return False, "Device ID is required for security"
     
@@ -63,44 +56,47 @@ def log_system_error(module, message, exception=None):
             exception_trace=traceback.format_exc() if exception else None
         )
     except Exception as e:
-        # If logging fails, at least print to console
         print(f"Failed to log error: {e}")
 
 
 @csrf_exempt
 def verify_phone(request):
     """
-    Verify phone number and device, with comprehensive security and logging
+    Verify phone number and device with detailed error messages
     """
     if request.method != "POST":
         return JsonResponse({"error": "POST request required"}, status=405)
 
-    # Get IP address
     ip_address = get_client_ip(request)
+    contact = None
+    device_id = None
     
     try:
-        data = json.loads(request.body)
+        # ============================================
+        # STEP 1: PARSE REQUEST BODY
+        # ============================================
+        try:
+            data = json.loads(request.body)
+        except json.JSONDecodeError as e:
+            SystemLog.objects.create(
+                level='ERROR',
+                module='API',
+                message=f'Invalid JSON from IP: {ip_address}'
+            )
+            return JsonResponse({
+                "verified": False,
+                "message": "Invalid request format. Please check your connection and try again."
+            }, status=400)
+
         contact = data.get("contact")
         device_id = data.get("device_id")
-        device_model = data.get("device_model")  # Optional: e.g., "Samsung Galaxy S21"
+        device_model = data.get("device_model")
 
         # ============================================
-        # STEP 1: DATA QUALITY CHECKS
+        # STEP 2: VALIDATE PHONE NUMBER FORMAT
         # ============================================
-        errors = []
-
-        # Validate contact format
         is_valid, error_msg = validate_contact_format(contact)
         if not is_valid:
-            errors.append(error_msg)
-
-        # Validate device ID
-        is_valid, error_msg = validate_device_id(device_id)
-        if not is_valid:
-            errors.append(error_msg)
-
-        if errors:
-            # Log failed validation
             AuditLog.objects.create(
                 user_contact=contact or 'unknown',
                 action='LOGIN_FAILED',
@@ -108,18 +104,19 @@ def verify_phone(request):
                 device_model=device_model,
                 ip_address=ip_address,
                 success=False,
-                failure_reason=f"Validation errors: {', '.join(errors)}",
-                metadata={'errors': errors}
+                failure_reason=f"Invalid phone format: {error_msg}",
+                metadata={'error': error_msg}
             )
-            return JsonResponse({"errors": errors}, status=400)
+            return JsonResponse({
+                "verified": False,
+                "message": f"Invalid phone number format. {error_msg}"
+            }, status=400)
 
         # ============================================
-        # STEP 2: CHECK IF STAFF EXISTS
+        # STEP 3: VALIDATE DEVICE ID
         # ============================================
-        try:
-            staff = Staff.objects.get(contact=contact)
-        except Staff.DoesNotExist:
-            # Log failed login attempt - user not found
+        is_valid, error_msg = validate_device_id(device_id)
+        if not is_valid:
             AuditLog.objects.create(
                 user_contact=contact,
                 action='LOGIN_FAILED',
@@ -127,7 +124,29 @@ def verify_phone(request):
                 device_model=device_model,
                 ip_address=ip_address,
                 success=False,
-                failure_reason='Contact not found in database',
+                failure_reason=f"Invalid device ID: {error_msg}",
+                metadata={'error': error_msg}
+            )
+            return JsonResponse({
+                "verified": False,
+                "message": f"Device validation failed. {error_msg}"
+            }, status=400)
+
+        # ============================================
+        # STEP 4: CHECK IF STAFF EXISTS
+        # ============================================
+        try:
+            staff = Staff.objects.get(contact=contact)
+        except Staff.DoesNotExist:
+            # Log failed login - user not found
+            AuditLog.objects.create(
+                user_contact=contact,
+                action='LOGIN_FAILED',
+                device_id=device_id,
+                device_model=device_model,
+                ip_address=ip_address,
+                success=False,
+                failure_reason='Phone number not found in database',
                 metadata={
                     'attempted_contact': contact,
                     'device_id': device_id
@@ -142,14 +161,20 @@ def verify_phone(request):
             
             return JsonResponse({
                 "verified": False,
-                "message": "Contact not found in system. Please contact administrator."
+                "message": f"Phone number {contact} not found in our system. Please contact your administrator."
             }, status=404)
+        except Exception as e:
+            # Unexpected database error
+            log_system_error('Database', f'Error querying staff with contact {contact}: {str(e)}', e)
+            return JsonResponse({
+                "verified": False,
+                "message": "Database error occurred. Please try again or contact support."
+            }, status=500)
 
         # ============================================
-        # STEP 3: CHECK IF ACCOUNT IS ACTIVE
+        # STEP 5: CHECK IF ACCOUNT IS ACTIVE
         # ============================================
         if not staff.is_active:
-            # Log attempt to access inactive account
             AuditLog.objects.create(
                 user_contact=contact,
                 staff=staff,
@@ -167,42 +192,48 @@ def verify_phone(request):
             
             return JsonResponse({
                 "verified": False,
-                "message": "Your account is inactive. Please contact administrator."
+                "message": f"Your account ({staff.name}) is currently inactive. Please contact your administrator to reactivate it."
             }, status=403)
 
         # ============================================
-        # STEP 4: DEVICE SECURITY CHECK (IMEI)
+        # STEP 6: DEVICE SECURITY CHECK
         # ============================================
         
-        # Check if this is first-time device registration
+        # First login - register device
         if not staff.registered_device_id:
-            # First login - register this device
-            staff.register_device(device_id, device_model)
-            
-            # Log device registration
-            AuditLog.objects.create(
-                user_contact=contact,
-                staff=staff,
-                action='DEVICE_REGISTER',
-                device_id=device_id,
-                device_model=device_model,
-                ip_address=ip_address,
-                success=True,
-                metadata={
-                    'staff_id': staff.staff_id,
-                    'name': staff.name,
-                    'first_registration': True
-                }
-            )
-            
-            SystemLog.objects.create(
-                level='INFO',
-                module='Device Management',
-                message=f'Device registered for {staff.name} ({contact}): {device_id}'
-            )
+            try:
+                staff.register_device(device_id, device_model)
+                
+                AuditLog.objects.create(
+                    user_contact=contact,
+                    staff=staff,
+                    action='DEVICE_REGISTER',
+                    device_id=device_id,
+                    device_model=device_model,
+                    ip_address=ip_address,
+                    success=True,
+                    metadata={
+                        'staff_id': staff.staff_id,
+                        'name': staff.name,
+                        'first_registration': True
+                    }
+                )
+                
+                SystemLog.objects.create(
+                    level='INFO',
+                    module='Device Management',
+                    message=f'Device registered for {staff.name} ({contact}): {device_id}'
+                )
+            except Exception as e:
+                log_system_error('Device Registration', f'Failed to register device for {contact}: {str(e)}', e)
+                return JsonResponse({
+                    "verified": False,
+                    "message": "Failed to register device. Please try again."
+                }, status=500)
         
+        # Check if device matches
         elif not staff.is_device_authorized(device_id):
-            # SECURITY ALERT: Different device trying to access account
+            # SECURITY ALERT: Different device
             AuditLog.objects.create(
                 user_contact=contact,
                 staff=staff,
@@ -229,66 +260,78 @@ def verify_phone(request):
             
             return JsonResponse({
                 "verified": False,
-                "message": "Unauthorized device. This account is registered to another device. Please contact administrator to change devices.",
+                "message": f"Security Alert: Your account ({staff.name}) is registered to another device. Please contact your administrator to change devices.",
                 "security_alert": True
             }, status=403)
 
         # ============================================
-        # STEP 5: SUCCESS - LOG AND RETURN DATA
+        # STEP 7: SUCCESS - RETURN DATA
         # ============================================
         
-        # Log successful login
-        AuditLog.objects.create(
-            user_contact=contact,
-            staff=staff,
-            action='LOGIN_SUCCESS',
-            device_id=device_id,
-            device_model=device_model,
-            ip_address=ip_address,
-            success=True,
-            metadata={
-                'staff_id': staff.staff_id,
-                'name': staff.name,
-                'functional_area': staff.functional_area
-            }
-        )
-        
-        # Return staff data
-        return JsonResponse({
-            "verified": True,
-            "name": staff.name,
-            "staff_id": staff.staff_id,
-            "functional_area": staff.functional_area,
-            "contact": staff.contact,
-            "photo": staff.photo.url if staff.photo else None,
-            "device_registered": staff.registered_device_id is not None,
-        })
+        try:
+            # Log successful login
+            AuditLog.objects.create(
+                user_contact=contact,
+                staff=staff,
+                action='LOGIN_SUCCESS',
+                device_id=device_id,
+                device_model=device_model,
+                ip_address=ip_address,
+                success=True,
+                metadata={
+                    'staff_id': staff.staff_id,
+                    'name': staff.name,
+                    'functional_area': staff.functional_area
+                }
+            )
+            
+            # Return staff data
+            return JsonResponse({
+                "verified": True,
+                "name": staff.name,
+                "staff_id": staff.staff_id or "N/A",
+                "functional_area": staff.functional_area or "N/A",
+                "contact": staff.contact,
+                "photo": staff.photo.url if staff.photo else None,
+                "device_registered": staff.registered_device_id is not None,
+            })
+        except Exception as e:
+            log_system_error('Response Generation', f'Error generating response for {contact}: {str(e)}', e)
+            return JsonResponse({
+                "verified": False,
+                "message": "Error generating response. Please try again."
+            }, status=500)
 
-    except json.JSONDecodeError:
-        # Log invalid JSON
-        SystemLog.objects.create(
-            level='ERROR',
-            module='API',
-            message=f'Invalid JSON received from IP: {ip_address}'
-        )
-        return JsonResponse({"error": "Invalid JSON format"}, status=400)
-    
     except Exception as e:
-        # Log unexpected errors
+        # Catch-all for any unexpected errors
         error_message = str(e)
-        log_system_error('verify_phone', f'Unexpected error: {error_message}', e)
+        log_system_error('verify_phone', f'Unexpected error for contact {contact}: {error_message}', e)
+        
+        # Try to log to AuditLog if we have contact
+        if contact:
+            try:
+                AuditLog.objects.create(
+                    user_contact=contact,
+                    action='LOGIN_FAILED',
+                    device_id=device_id,
+                    device_model=device_model,
+                    ip_address=ip_address,
+                    success=False,
+                    failure_reason=f'System error: {error_message}',
+                    metadata={'exception': error_message}
+                )
+            except:
+                pass
         
         return JsonResponse({
-            "error": "An unexpected error occurred. Please try again.",
-            "details": error_message if SystemLog.objects.filter(level='DEBUG').exists() else None
+            "verified": False,
+            "message": f"An unexpected error occurred: {error_message}. Please contact support if this persists."
         }, status=500)
 
 
 @csrf_exempt
 def verify_scan(request):
-    """
-    Log QR code scans with device and location tracking
-    """
+    """Log QR code scans"""
     if request.method != "POST":
         return JsonResponse({"error": "POST request required"}, status=405)
 
@@ -299,13 +342,15 @@ def verify_scan(request):
         contact = data.get("contact")
         device_id = data.get("device_id")
         device_model = data.get("device_model")
-        location = data.get("location", "Main Entrance")  # Optional: gate location
+        location = data.get("location", "Main Entrance")
 
-        # Validate inputs
         if not contact:
-            return JsonResponse({"error": "Contact required"}, status=400)
+            return JsonResponse({
+                "success": False,
+                "message": "Contact required"
+            }, status=400)
 
-        # Try to get staff (optional - scan might happen without full verification)
+        # Try to get staff
         staff = None
         try:
             staff = Staff.objects.get(contact=contact)
@@ -337,20 +382,20 @@ def verify_scan(request):
 
     except Exception as e:
         log_system_error('verify_scan', f'Error logging scan: {str(e)}', e)
-        return JsonResponse({"error": str(e)}, status=500)
+        return JsonResponse({
+            "success": False,
+            "message": f"Error logging scan: {str(e)}"
+        }, status=500)
 
 
 def recent_entry(request):
-    """
-    Get recent entry logs for a contact
-    """
+    """Get recent entry logs"""
     contact = request.GET.get("contact")
 
     if not contact:
         return JsonResponse({"recent_entry": None})
 
     try:
-        # Get most recent scan from new AuditLog
         recent = AuditLog.objects.filter(
             user_contact=contact,
             action='SCAN',
@@ -371,21 +416,18 @@ def recent_entry(request):
             
     except Exception as e:
         log_system_error('recent_entry', f'Error fetching recent entry: {str(e)}', e)
-        return JsonResponse({"error": str(e)}, status=500)
+        return JsonResponse({
+            "error": f"Error fetching data: {str(e)}"
+        }, status=500)
 
 
 def audit_report(request):
-    """
-    Get audit logs for admin panel (optional endpoint)
-    Requires admin authentication in production
-    """
+    """Get audit logs (admin only)"""
     try:
-        # Get query parameters
         contact = request.GET.get('contact')
         action = request.GET.get('action')
         limit = int(request.GET.get('limit', 50))
         
-        # Build query
         logs = AuditLog.objects.all()
         
         if contact:
@@ -395,7 +437,6 @@ def audit_report(request):
         
         logs = logs[:limit]
         
-        # Format response
         log_data = [{
             'id': log.id,
             'contact': log.user_contact,
@@ -414,4 +455,6 @@ def audit_report(request):
     
     except Exception as e:
         log_system_error('audit_report', f'Error generating report: {str(e)}', e)
-        return JsonResponse({"error": str(e)}, status=500)
+        return JsonResponse({
+            "error": f"Error generating report: {str(e)}"
+        }, status=500)
