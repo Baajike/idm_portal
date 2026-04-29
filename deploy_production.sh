@@ -87,12 +87,7 @@ info "Hardening .env for production..."
 ENV_FILE="$PROJECT_DIR/.env"
 
 # Rotate SECRET_KEY
-NEW_SECRET=$(python3 - << 'PYEOF'
-import secrets, string
-chars = string.ascii_letters + string.digits + '!@#%^&*(-_=+)'
-print(''.join(secrets.choice(chars) for _ in range(60)))
-PYEOF
-)
+NEW_SECRET=$(python3 -c "import secrets; print(secrets.token_urlsafe(45))")
 
 # Update or add each production value
 set_env() {
