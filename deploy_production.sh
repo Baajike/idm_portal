@@ -1,8 +1,6 @@
 #!/usr/bin/env bash
 # =============================================================================
-# IDM Portal — Production Deployment Script
-# Gunicorn + Nginx + HTTPS (self-signed, upgradeable to Let's Encrypt)
-# Target: leluserver @ 192.168.31.146
+# IDM Portal — Production Deployment Script (REFINED)
 # =============================================================================
 
 set -euo pipefail
@@ -17,155 +15,50 @@ error()   { echo -e "${RED}[ERROR]${NC} $*"; }
 die()     { error "$*"; exit 1; }
 
 # =============================================================================
-# CONFIGURATION — edit these before running, or pass as env vars
+# CONFIGURATION
 # =============================================================================
-
-# If you later get a domain, re-run the script with:
-#   DOMAIN=yourdomain.com ./deploy_production.sh
-# The script will use Let's Encrypt instead of self-signed.
-
 SERVER_IP="${SERVER_IP:-192.168.31.146}"
-DOMAIN="${DOMAIN:-}"                          # leave empty = IP only (self-signed)
 PROJECT_DIR="${PROJECT_DIR:-/home/lelu/idm_portal}"
 APP_USER="${APP_USER:-lelu}"
 VENV_DIR="$PROJECT_DIR/venv"
-GUNICORN_WORKERS="${GUNICORN_WORKERS:-3}"      # rule of thumb: 2x CPU cores + 1
-DJANGO_PORT="8000"                             # internal Gunicorn port
+DJANGO_PORT="8000"
 SERVICE_NAME="idm_portal"
-
-# Derive the host Nginx will listen/serve for
-if [[ -n "$DOMAIN" ]]; then
-  SERVER_NAME="$DOMAIN"
-  USE_LETSENCRYPT=true
-else
-  SERVER_NAME="$SERVER_IP"
-  USE_LETSENCRYPT=false
-fi
+SSL_DIR="/etc/ssl/idm_portal"
 
 # =============================================================================
 # 0. PREFLIGHT
 # =============================================================================
-echo -e "${CYAN}"
-cat << 'EOF'
-  ___  ____  __  __   ____            _
- |_ _||  _ \|  \/  | |  _ \ ___ _ __ | | ___  _   _
-  | | | | | | |\/| | | | | / _ \ '_ \| |/ _ \| | | |
-  | | | |_| | |  | | | |_| |  __/ |_) | | (_) | |_| |
- |___||____/|_|  |_| |____/ \___| .__/|_|\___/ \__, |
-  Production Setup               |_|            |___/
-EOF
-echo -e "${NC}"
-
 [[ "$EUID" -eq 0 ]] && die "Do not run as root. Use a sudo-capable user."
 [[ ! -f "$PROJECT_DIR/manage.py" ]] && die "manage.py not found in $PROJECT_DIR"
-[[ ! -d "$VENV_DIR" ]] && die "Virtual environment not found. Run install.sh first."
-[[ ! -f "$PROJECT_DIR/.env" ]] && die ".env not found. Run install.sh first."
-
-info "Deploying to: $SERVER_NAME"
-info "Project dir:  $PROJECT_DIR"
-info "App user:     $APP_USER"
-info "HTTPS mode:   $([ "$USE_LETSENCRYPT" = true ] && echo 'LetsEncrypt' || echo 'Self-signed')"
-echo ""
 
 # =============================================================================
-# 1. SYSTEM PACKAGES
-# =============================================================================
-info "Installing Nginx, Gunicorn dependencies, and SSL tools..."
-sudo apt-get update -qq
-sudo apt-get install -y nginx openssl
-
-if [[ "$USE_LETSENCRYPT" == true ]]; then
-  sudo apt-get install -y certbot python3-certbot-nginx
-fi
-success "System packages ready."
-
-# =============================================================================
-# 2. HARDEN .env
+# 1. HARDEN .env FOR PRODUCTION
 # =============================================================================
 info "Hardening .env for production..."
-
-ENV_FILE="$PROJECT_DIR/.env"
-
-# Rotate SECRET_KEY
-NEW_SECRET=$(python3 -c "import secrets; print(secrets.token_urlsafe(45))")
-
-# Update or add each production value
-set_env() {
-  local key="$1" val="$2"
-  if grep -q "^${key}=" "$ENV_FILE"; then
-    sed -i "s|^${key}=.*|${key}=${val}|" "$ENV_FILE"
-  else
-    echo "${key}=${val}" >> "$ENV_FILE"
-  fi
-}
-
-set_env "DEBUG"         "False"
-set_env "SECRET_KEY"    "$NEW_SECRET"
-set_env "ALLOWED_HOSTS" "$SERVER_NAME"
-
-success ".env hardened (DEBUG=False, fresh SECRET_KEY, ALLOWED_HOSTS locked)."
-
-# =============================================================================
-# 3. FIX CORS FOR PRODUCTION  (Bug #4 from install)
-# =============================================================================
-info "Fixing CORS settings for production..."
-
-SETTINGS_FILE="$PROJECT_DIR/config/settings.py"
-
-# Remove CORS_ALLOW_ALL_ORIGINS if present
-if grep -q "CORS_ALLOW_ALL_ORIGINS" "$SETTINGS_FILE"; then
-  sed -i '/^CORS_ALLOW_ALL_ORIGINS/d' "$SETTINGS_FILE"
-  warn "  Removed CORS_ALLOW_ALL_ORIGINS = True (was overriding whitelist)"
+if [[ -f "$PROJECT_DIR/.env" ]]; then
+  sed -i "s/DEBUG=True/DEBUG=False/" "$PROJECT_DIR/.env"
+  success ".env set to DEBUG=False"
 fi
 
-# Ensure CORS_ALLOWED_ORIGINS includes the server
-python3 << PYEOF
-import re
-
-path = "$SETTINGS_FILE"
-with open(path) as f:
-    content = f.read()
-
-entry_http  = f'    "http://$SERVER_NAME",'
-entry_https = f'    "https://$SERVER_NAME",'
-
-if entry_https not in content:
-    content = re.sub(
-        r'(CORS_ALLOWED_ORIGINS\s*=\s*\[)',
-        f'\\1\n{entry_http}\n{entry_https}',
-        content
-    )
-    with open(path, "w") as f:
-        f.write(content)
-    print("  Added server origin to CORS_ALLOWED_ORIGINS.")
-else:
-    print("  CORS_ALLOWED_ORIGINS already contains server origin.")
-PYEOF
-
-success "CORS configured."
+# =============================================================================
+# 2. SSL CERTIFICATES
+# =============================================================================
+if [[ ! -f "$SSL_DIR/cert.pem" ]]; then
+  info "Generating self-signed SSL certificate..."
+  sudo mkdir -p "$SSL_DIR"
+  sudo openssl req -x509 -nodes -days 365 \
+    -newkey rsa:2048 \
+    -keyout "$SSL_DIR/key.pem" \
+    -out    "$SSL_DIR/cert.pem" \
+    -subj   "/CN=$SERVER_IP/O=IDM Portal/C=GH" \
+    -addext "subjectAltName=IP:$SERVER_IP"
+  success "SSL certificates generated at $SSL_DIR"
+fi
 
 # =============================================================================
-# 4. INSTALL GUNICORN INTO VENV
+# 3. GUNICORN SYSTEMD SERVICE
 # =============================================================================
-info "Installing Gunicorn..."
-source "$VENV_DIR/bin/activate"
-pip install gunicorn --quiet
-success "Gunicorn installed."
-
-# =============================================================================
-# 5. COLLECT STATIC FILES
-# =============================================================================
-info "Collecting static files..."
-source "$VENV_DIR/bin/activate"
-cd "$PROJECT_DIR"
-python manage.py collectstatic --noinput
-success "Static files collected."
-
-# =============================================================================
-# 6. GUNICORN SYSTEMD SERVICE
-# =============================================================================
-info "Creating Gunicorn systemd service..."
-
+info "Setting up Gunicorn service..."
 sudo tee /etc/systemd/system/${SERVICE_NAME}.service > /dev/null << EOF
 [Unit]
 Description=IDM Portal — Gunicorn
@@ -177,7 +70,7 @@ Group=www-data
 WorkingDirectory=${PROJECT_DIR}
 EnvironmentFile=${PROJECT_DIR}/.env
 ExecStart=${VENV_DIR}/bin/gunicorn \\
-    --workers ${GUNICORN_WORKERS} \\
+    --workers 3 \\
     --bind 127.0.0.1:${DJANGO_PORT} \\
     --timeout 120 \\
     --access-logfile ${PROJECT_DIR}/logs/gunicorn_access.log \\
@@ -190,85 +83,33 @@ RestartSec=5
 WantedBy=multi-user.target
 EOF
 
-# Create log directory
 mkdir -p "$PROJECT_DIR/logs"
-chown "$APP_USER":www-data "$PROJECT_DIR/logs"
-
 sudo systemctl daemon-reload
 sudo systemctl enable "${SERVICE_NAME}"
 sudo systemctl restart "${SERVICE_NAME}"
 success "Gunicorn service running."
 
 # =============================================================================
-# 7. SSL CERTIFICATE
+# 4. NGINX CONFIGURATION (PORT 8443)
 # =============================================================================
-SSL_DIR="/etc/ssl/idm_portal"
-sudo mkdir -p "$SSL_DIR"
-
-if [[ "$USE_LETSENCRYPT" == true ]]; then
-  # ── Let's Encrypt ──────────────────────────────────────────────────────────
-  info "Obtaining Let's Encrypt certificate for $DOMAIN..."
-  sudo certbot --nginx -d "$DOMAIN" --non-interactive --agree-tos \
-    --register-unsafely-without-email
-  CERT_PATH="/etc/letsencrypt/live/$DOMAIN/fullchain.pem"
-  KEY_PATH="/etc/letsencrypt/live/$DOMAIN/privkey.pem"
-  success "Let's Encrypt certificate issued."
-
-else
-  # ── Self-signed (IP only) ───────────────────────────────────────────────────
-  info "Generating self-signed certificate for $SERVER_IP..."
-  warn "  Browsers and Flutter will show a certificate warning."
-  warn "  To trust it on Android: copy /etc/ssl/idm_portal/cert.pem to device"
-  warn "  and install via Settings → Security → Install certificate."
-
-  sudo openssl req -x509 -nodes -days 365 \
-    -newkey rsa:2048 \
-    -keyout "$SSL_DIR/key.pem" \
-    -out    "$SSL_DIR/cert.pem" \
-    -subj   "/CN=$SERVER_IP/O=IDM Portal/C=GH" \
-    -addext "subjectAltName=IP:$SERVER_IP"
-
-  CERT_PATH="$SSL_DIR/cert.pem"
-  KEY_PATH="$SSL_DIR/key.pem"
-  success "Self-signed certificate generated at $SSL_DIR"
-fi
-
-# =============================================================================
-# 8. NGINX CONFIGURATION
-# =============================================================================
-info "Configuring Nginx..."
-
+info "Configuring Nginx on port 8443..."
 NGINX_CONF="/etc/nginx/sites-available/${SERVICE_NAME}"
 
 sudo tee "$NGINX_CONF" > /dev/null << EOF
-# IDM Portal — Nginx config
-# To upgrade to a domain later:
-#   1. Set DOMAIN=yourdomain.com and re-run this script
-#   2. Or manually replace server_name and the ssl_certificate paths
-
-# Redirect HTTP → HTTPS
 server {
-    listen 80;
-    server_name ${SERVER_NAME};
-    return 301 https://\$host\$request_uri;
-}
+    listen 8443 ssl;
+    server_name ${SERVER_IP};
 
-server {
-    listen 443 ssl;
-    server_name ${SERVER_NAME};
-
-    ssl_certificate     ${CERT_PATH};
-    ssl_certificate_key ${KEY_PATH};
+    ssl_certificate     ${SSL_DIR}/cert.pem;
+    ssl_certificate_key ${SSL_DIR}/key.pem;
     ssl_protocols       TLSv1.2 TLSv1.3;
     ssl_ciphers         HIGH:!aNULL:!MD5;
 
-    # Security headers
     add_header X-Frame-Options           DENY;
     add_header X-Content-Type-Options    nosniff;
     add_header X-XSS-Protection          "1; mode=block";
     add_header Strict-Transport-Security "max-age=31536000; includeSubDomains" always;
 
-    # API
     location /api/ {
         proxy_pass         http://127.0.0.1:${DJANGO_PORT};
         proxy_set_header   Host              \$host;
@@ -278,7 +119,6 @@ server {
         proxy_read_timeout 120;
     }
 
-    # Admin
     location /admin/ {
         proxy_pass         http://127.0.0.1:${DJANGO_PORT};
         proxy_set_header   Host              \$host;
@@ -287,77 +127,38 @@ server {
         proxy_set_header   X-Forwarded-Proto \$scheme;
     }
 
-    # Static files
     location /static/ {
         alias ${PROJECT_DIR}/staticfiles/;
         expires 7d;
         add_header Cache-Control "public";
     }
 
-    # Media files
     location /media/ {
         alias ${PROJECT_DIR}/media/;
         expires 7d;
         add_header Cache-Control "public";
     }
+
+    location / {
+        root ${PROJECT_DIR};
+        index text.html;
+        try_files \$uri \$uri/ =404;
+    }
 }
 EOF
 
-# Enable site
 sudo ln -sf "$NGINX_CONF" /etc/nginx/sites-enabled/${SERVICE_NAME}
-
-# Remove default Nginx site if present
-sudo rm -f /etc/nginx/sites-enabled/default
-
-# Test config
 sudo nginx -t
 sudo systemctl restart nginx
-success "Nginx configured and running."
+success "Nginx configured on port 8443."
 
 # =============================================================================
-# 9. FIREWALL
+# 5. FIREWALL
 # =============================================================================
-info "Configuring firewall (ufw)..."
 if command -v ufw &>/dev/null; then
-  sudo ufw allow 80/tcp
-  sudo ufw allow 443/tcp
-  sudo ufw allow OpenSSH
-  sudo ufw --force enable
-  success "Firewall rules applied (80, 443, SSH)."
-else
-  warn "ufw not found — configure your firewall manually to allow ports 80 and 443."
+  sudo ufw allow 8443/tcp
+  success "Firewall rule for 8443 ensured."
 fi
 
-# =============================================================================
-# 10. SUMMARY
-# =============================================================================
-echo ""
-echo -e "${CYAN}════════════════════════════════════════════════════════${NC}"
-echo -e "${GREEN}  IDM Portal production deployment complete!${NC}"
-echo -e "${CYAN}════════════════════════════════════════════════════════${NC}"
-echo ""
-echo -e "  ${BLUE}API base:${NC}     https://${SERVER_NAME}/api/"
-echo -e "  ${BLUE}Admin panel:${NC}  https://${SERVER_NAME}/admin/"
-echo ""
-echo -e "  ${BLUE}Service management:${NC}"
-echo "    sudo systemctl status  ${SERVICE_NAME}"
-echo "    sudo systemctl restart ${SERVICE_NAME}"
-echo "    sudo systemctl restart nginx"
-echo ""
-echo -e "  ${BLUE}Logs:${NC}"
-echo "    tail -f ${PROJECT_DIR}/logs/gunicorn_access.log"
-echo "    tail -f ${PROJECT_DIR}/logs/gunicorn_error.log"
-echo "    sudo journalctl -u ${SERVICE_NAME} -f"
-echo ""
-
-if [[ "$USE_LETSENCRYPT" == false ]]; then
-  echo -e "  ${YELLOW}Self-signed cert:${NC} ${CERT_PATH}"
-  echo -e "  ${YELLOW}To trust on Android Flutter app:${NC}"
-  echo "    adb push ${CERT_PATH} /sdcard/idm_cert.pem"
-  echo "    Then: Settings → Security → Install certificate → CA certificate"
-  echo ""
-  echo -e "  ${YELLOW}To upgrade to a real domain later:${NC}"
-  echo "    DOMAIN=yourdomain.com ./deploy_production.sh"
-fi
-
-echo -e "${CYAN}════════════════════════════════════════════════════════${NC}"
+info "Deployment complete! IDM Portal is live at https://${SERVER_IP}:8443"
+info "Note: Port 80 and 443 are untouched and reserved for LELU."
