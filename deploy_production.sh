@@ -64,7 +64,7 @@ echo -e "${NC}"
 info "Deploying to: $SERVER_NAME"
 info "Project dir:  $PROJECT_DIR"
 info "App user:     $APP_USER"
-info "HTTPS mode:   $([ "$USE_LETSENCRYPT" = true ] && echo 'Let's Encrypt' || echo 'Self-signed')"
+info "HTTPS mode:   $([ "$USE_LETSENCRYPT" = true ] && echo 'LetsEncrypt' || echo 'Self-signed')"
 echo ""
 
 # =============================================================================
