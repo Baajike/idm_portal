@@ -8,7 +8,7 @@ import 'package:path_provider/path_provider.dart';
 import 'package:device_info_plus/device_info_plus.dart';
 
 // ⚠️ IMPORTANT: Change this to your server IP when deploying
-const String BASE_URL = 'https://192.168.31.146:8443';
+const String baseUrl = 'https://192.168.31.146:8443';
 
 // ============================================
 // Device ID Functions (Hidden from UI)
@@ -310,7 +310,7 @@ class _LoginScreenState extends State<LoginScreen> {
     String deviceModel = await getDeviceModel();
 
     try {
-      final url = Uri.parse('$BASE_URL/api/verify/');
+      final url = Uri.parse('$baseUrl/api/verify/');
       final response = await http.post(
         url,
         headers: {'Content-Type': 'application/json'},
@@ -339,7 +339,7 @@ class _LoginScreenState extends State<LoginScreen> {
 
           // Cache photo
           if (data['photo'] != null) {
-            await _cachePhoto('$BASE_URL${data['photo']}', phone);
+            await _cachePhoto('$baseUrl${data['photo']}', phone);
           }
 
           if (mounted) {
@@ -646,7 +646,7 @@ class _ScanScreenState extends State<ScanScreen> {
     String deviceModel = await getDeviceModel();
 
     try {
-      final url = Uri.parse('$BASE_URL/api/verify/');
+      final url = Uri.parse('$baseUrl/api/verify/');
       final response = await http.post(
         url,
         headers: {'Content-Type': 'application/json'},
@@ -664,7 +664,7 @@ class _ScanScreenState extends State<ScanScreen> {
           await _logScan(deviceId, deviceModel);
 
           if (data['photo'] != null) {
-            await _showFullImageFromUrl('$BASE_URL${data['photo']}');
+            await _showFullImageFromUrl('$baseUrl${data['photo']}');
           } else {
             await _showFullImagePlaceholder();
           }
@@ -678,7 +678,7 @@ class _ScanScreenState extends State<ScanScreen> {
   Future<void> _logScan(String deviceId, String deviceModel) async {
     try {
       await http.post(
-        Uri.parse('$BASE_URL/api/scan/'),
+        Uri.parse('$baseUrl/api/scan/'),
         headers: {'Content-Type': 'application/json'},
         body: jsonEncode({
           'contact': widget.contact,
@@ -748,7 +748,7 @@ class _ScanScreenState extends State<ScanScreen> {
                     fit: BoxFit.contain,
                     width: double.infinity,
                     height: double.infinity,
-                    errorBuilder: (_, __, ___) =>
+                    errorBuilder: (_, _, _) =>
                         const Icon(Icons.person, size: 200, color: Colors.grey),
                   ),
                 ),

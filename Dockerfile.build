@@ -1,0 +1,9 @@
+FROM ubuntu:22.04
+RUN apt-get update && apt-get install -y curl git unzip xz-utils zip libglu1-mesa
+RUN curl -o flutter.tar.xz https://storage.googleapis.com/flutter_infra_release/releases/stable/linux/flutter_linux_3.10.3-stable.tar.xz \
+    && tar xf flutter.tar.xz -C /opt \
+    && rm flutter.tar.xz
+ENV PATH="/opt/flutter/bin:${PATH}"
+RUN git config --global --add safe.directory /app
+WORKDIR /app
+CMD ["sh", "-c", "flutter pub get && flutter build apk --release"]
