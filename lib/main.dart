@@ -8,7 +8,7 @@ import 'package:path_provider/path_provider.dart';
 import 'package:device_info_plus/device_info_plus.dart';
 
 // ⚠️ IMPORTANT: Change this to your server IP when deploying
-const String BASE_URL = 'http://127.0.0.1:8000'; // Change to your server IP
+const String BASE_URL = 'https://192.168.31.146:8443';
 
 // ============================================
 // Device ID Functions (Hidden from UI)
